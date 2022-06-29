@@ -1,13 +1,7 @@
-#!/usr/bin/env python
-
-from msilib.schema import tables
-from platform import processor
-from socket import VMADDR_CID_ANY
 from hardware import *
 from time import sleep
 import log
-# import Scheduler from scheduler
-# STATUS LOS ESTADOS SON RUNNING WAITING BLOCKED CREATED Y FINISH
+
 STATUS_RUNNING = 'RUNNING'
 STATUS_WAITING = 'WAITING'
 STATUS_BLOCKED = 'BLOCKED'
@@ -19,7 +13,7 @@ STATUS_FINISH = 'FINISH'
 
 class Program():
 
-    def __init__(self, name, instructions):
+    def _init_(self, name, instructions):
         self._name = name
         self._instructions = self.expand(instructions)
 
@@ -30,6 +24,9 @@ class Program():
     @property
     def instructions(self):
         return self._instructions
+
+    def _len_(self):
+        return len(self._instructions)
 
     def addInstr(self, instruction):
         self._instructions.append(instruction)
@@ -52,7 +49,7 @@ class Program():
 
         return expanded
 
-    def __repr__(self):
+    def _repr_(self):
         return "Program({name}, {instructions})".format(name=self._name, instructions=self._instructions)
 
 # emulates the core of an Operative System
@@ -60,15 +57,37 @@ class Program():
 
 class Kernel():
 
-    def __init__(self):
-        pass
+    # Primero crear processor
+    # cargarlo
+
+    def _init_(self):
+        self._nextMemoryAddress = 0
+        self._scheduler = Scheduler()
+
+    @property
+    def nextMemoryAddress(self):
+        return self._nextMemoryAddress
+
+    @nextMemoryAddress.setter
+    def nextMemoryAddress(self, value):
+        self._nextMemoryAddress = value
+
+    def executeBatch(self, batch):
+        for index in batch:
+            self.load_program(index)
+        self.runBatch()
 
     def load_program(self, program):
-        # loads the program in main memory
-        progSize = len(program.instructions)
+        # Carga el programa en memoria.
+        progSize = len(program)
+        procces = self._scheduler.create(
+            program, self.nextMemoryAddress, self.nextMemoryAddress + progSize)
+        self._scheduler.load(procces.pid)
         for index in range(0, progSize):
             inst = program.instructions[index]
-            HARDWARE.memory.write(index, inst)
+            HARDWARE.memory.write(index + self.nextMemoryAddress, inst)
+
+        self.nextMemoryAddress = self.nextMemoryAddress + progSize
 
     # emulates a "system call" for programs execution
     def run(self, program):
@@ -84,23 +103,36 @@ class Kernel():
             HARDWARE.cpu.tick(i)
             sleep(1)
 
-    def __repr__(self):
+    def runBatch(self):
+        log.logger.info(HARDWARE)
+        while self._scheduler.hasNEXT():
+            self._scheduler.loadNextProcess()
+            process = self._scheduler.tablaDeProcesos[self._scheduler._currentProcess]
+            progSize = len(process.program)
+            HARDWARE.cpu.pc = process.memoryStart
+            log.logger.info("\n Executing program: {name}".format(
+                name=process.program.name))
+            for i in range(0, progSize):
+                HARDWARE.cpu.tick(i)
+                sleep(1)
+            self._scheduler.kill(self._scheduler._currentProcess)
+
+    def _repr_(self):
         return "Kernel "
 
 
 class Process():
 
-    def _init_(self, name, memoryStart, memoryEnd):
-        self._name = name
+    def _init_(self, pid, program, memoryStart, memoryEnd):
+        self._program = program
         self._memoryStart = memoryStart
         self._memoryEnd = memoryEnd
-        self._pid = int  # preguntar como va el pid en el process
-        self._pc = pc  # preguntar que va aca
-        self._status = status  # el estado por ahora no lo usamos capaz metemeos un enum
+        self._pid = pid
+        self._status = STATUS_CREATED
 
     @property
-    def name(self):
-        return self._name
+    def program(self):
+        return self._program
 
     @property
     def memoryEnd(self):
@@ -122,19 +154,20 @@ class Process():
     def status(self):
         return self._status
 
+    @status.setter
+    def status(self, value):
+        self._status = value
+
 
 class Scheduler():
 
     def _init_(self):
-        # cola donde cargo los procesos que voy a ir sacando de la cola cuando ejejuto y terminan
         self._process_queue = []
-        # esto es un mapa clave valor llamado diccionario
         self._tabla_de_procesos = {}
-        self._proximo_pid = 1
-        # pid que corre actual aca capaz que va el el ultimo pid de la cola ingresado
-        self._currentProcess = int
-# geters
+        self._proximo_pid = 0
+        self._currentProcess = 0
 
+    # geters
     @property
     def processQueue(self):
         return self._process_queue
@@ -147,54 +180,34 @@ class Scheduler():
     def proximoPid(self):
         return self._proximo_pid
 
+    @proximoPid.setter
+    def proximoPid(self, value):
+        self._proximo_pid = value
+
     def create(self, name, memoriaInicio, memoriaFin):
-        # aca hay que asignar pid actual y luego incrementarlo en 1 para el proximo queviene
-        # crea ael proceso y llo mete en la tabla de procesos
-        # y guardar el pid del proceso que acabo de crear en la  de proce queue en la cola de procesos el queue
-        # PREGUNTAR SI VA POR ACA
-        process = Process(name, memoriaInicio, memoriaFin)
-        self._tabla_de_procesos = {self.proximoPid: process}
-        self._process_queue.append(self.proximoPid)
-        self.proximoPid = + 1
+        process = Process(self.proximoPid, name, memoriaInicio, memoriaFin)
+        self._tabla_de_procesos[self.proximoPid] = process
+        self.processQueue.append(self.proximoPid)
+        self.proximoPid += 1
+        return process
 
     def load(self, pid):
-        # lo que hace es buscar e proceso con el pid en la process table
-        # cargar el proceso en el cpu
-        # y cambiar estado del proceso(el proceso tiene un progam counter y)
-        # actualizo el pc a la clase cpu y le cambio el status al proceso a estado ejecutando running
-        # actualiza current process
         processEncontrado = self.tablaDeProcesos.get(pid)
-        HARDWARE.cpu.pc = processEncontrado.pid
         processEncontrado.status = STATUS_RUNNING
-        self._currentProcess = self._proximo_pid - 1  # preguntar si es asi esto
+        self._currentProcess = pid
 
     def unload(self, pid):
-        # buscar proceso con el pid en process table
-
-        # lo contrario a load . el que voy a descargar es el pid que coincide con el pid que tiene el pc de la clase cpu
-        # dudas
-        # cargar lo del cpu en el proceso y cambiar el estado del proceso a waiting(LOS ESTADOS SON RUNNING WAITING BLOCKED CREATED Y FINISH)
-        # actualiza current process
         processEncontrado = self.tablaDeProcesos.get(pid)
-        processEncontrado.pid = HARDWARE.cpu.pc
         processEncontrado.status = STATUS_WAITING
-        self._currentProcess = None  # preguntar si es asi
+        self._currentProcess = None
 
     def kill(self, pid):
-        # eliminar de process table el pid y su proceso asociado sacar la clave valor
-        # eliminar de process queue el pid
-        # ojo con current process
-        # preguntar si asi borra el valor asociado a esta clave si es que borra todo junto el par
-        self._tablaDeProcesos.pop(pid)
-        self._process_queue.remove(pid)
-        self._currentProcess = None  # preguntar
+        self.unload(pid)
+        self.tablaDeProcesos.pop(pid)
+        self._process_queue.pop(0)
 
     def loadNextProcess(self):
-        # carga el proceso sigueijnte de process queue
-        # llamar a load process con el proximo de queue
-        self.load(self._proximo_pid)  # preguntar
+        self.load(self.processQueue[0])
 
-    def hasnEXT(self):
-        # INDICA SI PROCESS QUEUE NO  ESTA VMADDR_CID_ANY
-        # ESTO USO PARA CORRER AFUERA DE SCHEDULER CUANDO EJECUTA EL KERNEL
-        return self._process_queue.__len__ != 0  # preguntar
+    def hasNEXT(self):
+        return len(self.processQueue) != 0
